@@ -1,0 +1,1321 @@
+---
+title: "Sleep Quality Analysis"
+subtitle: "Comprehensive study of factors affecting sleep quality using supervised learning models (GLM, Random Forest, GBM)"
+author: "Patricia Fernández Sanz"
+format:
+  html:
+    theme: [style.scss]
+    toc: true
+    toc-location: right
+    toc-title: Índice
+    code-fold: true
+    code-tools: true
+editor: visual
+embed-resources: true
+---
+
+El propósito de este trabajo es aplicar técnicas de modelización predictiva para resolver un problema realista, desde la preparación de datos hasta la evaluación de modelos, con el fin de comparar su rendimiento y justificar la elección final.
+
+# Elección de la Base de Datos
+
+En primer lugar, se debía elegir una base de datos que tuviese una variable objetivo de tipo continuo, discreto, binario, nominal u ordinal (en nuestro caso ordinal, pero se explicará más en detalle a continuación)
+
+Debe contener también al menos 12 variables predictoras y un mínimo de 1000 observaciones.
+
+# Carga de Librerías y Datos
+
+Antes de proceder con cualquier proceso de depuración o análisis, se cargan las distintas librerías que se necesitarán a lo largo del proyecto y los datos.
+
+```{r}
+#| message: false
+#| warning: false
+library(MASS)
+library(stargazer)
+library(caret)
+library(car)
+library(vcd)
+library(purrr)
+library(dplyr)
+library(nnet)
+library(lmtest)
+library(rpart)
+library(rpart.plot)
+library(pROC)
+library(rattle)
+library(vcd)
+library(partykit)
+library(rpartScore)
+library(randomForest)
+library(OOBCurve)
+library(furrr)
+library(iml)
+library(glmnet)
+library(lubridate)
+library(adabag)
+library(gbm)
+# Para paralelizar
+library(doParallel)
+cluster <- makeCluster(detectCores() - 1)
+registerDoParallel(cluster)
+```
+
+Una vez están cargadas todas las librerías, se cargan los datos.
+
+```{r}
+datos<-read.csv("stress_detection_data.csv")
+```
+
+# Descripción de la Base
+
+La siguiente base de datos consiste en un estudio de individuos reales donde se tienen en cuenta sus hábitos de vida, salud e indicadores de estrés.
+
+Cada observación representa a un individuo (se cuenta con 774 sujetos) donde se reflejan, entre otras cosas, sus consumiciones de café, comportamiento, patrones de sueño y variables de salud.
+
+Cuenta con las siguientes 22 variables:
+
+-   **Age**: Edad del individuo
+
+-   **Gender**: Sexo del individuo (binaria)
+
+-   **Occupation**: Profesión del individuo (toma 169 valores)
+
+-   **Marital_Status**: Soltero, Casado o Divorciado
+
+-   **Sleep_Duration**: Número de horas que duerme el individuo
+
+-   **Sleep_Quality**: Calidad de sueño entre 1 y 5 que siente que ha experimentado el individuo
+
+-   **Wake_Up_Time**: Hora a la que se despierta normalmente
+
+-   **Bed_Time**: Hora a la que se acuesta normalmente
+
+-   **Physical_Activity**: Frecuencia con la que hace deporte a la semana
+
+-   **Screen_Time**: Horas diarias de uso de pantallas en media del individuo
+
+-   **Caffeine_Intake**: Cantidad de cafeína consumida (tazas de café)
+
+-   **Alcohol_Intake**: Cantidad de bebidas alcohólicas consumidas (bebidas por semana)
+
+-   **Smoking_Habit**: Si fuma o no (binaria)
+
+-   **Work_Hours**: Número de horas trabajadas
+
+-   **Travel_Time**: Número de horas al día invertidas en transporte
+
+-   **Social_Interactions**: Frecuencia de interacciones sociales (eventos sociales)
+
+-   **Meditation_Practice**: Si el individuo medita o no (binaria)
+
+-   **Exercise_Type**: Tipo de ejercicio que hace (Cardio, Yoga, Pilates, etc. 6 categorías)
+
+-   **Blood_Pressure**: Niveles de presión en sangre
+
+-   **Cholesterol_Level**: Nivel de colesterol (mg/dL).
+
+-   **Blood_Sugar_Level**: Nivel de azúcar en sangre (mg/dL).
+
+-   **Stress_Detection**: Nivel de estrés (Low, Medium o High)
+
+Para el estudio se va a utilizar como variable objetivo **Sleep_Quality** en función de los distintos factores que muestra el individuo. Además, como son valores reales, podemos extrapolar los resultados a la población.
+
+# Depuración de Datos
+
+Antes de comenzar a trabajar en los distintos modelos, se deben revisar las distintas variables y valores de las mismas que toma la base de datos, pasar a factor aquellas que lo necesiten y reagrupar aquellas variables que tengan muy pocas observaciones por categoría.
+
+## Codificación y transformación
+
+Se procede, con la ayuda de la función str(), a ver cómo están declaradas las variables y, en caso de que sea necesario, recodificarlas.
+
+```{r}
+str(datos)
+```
+
+De base vemos como se cuenta con 22 variables (21 predictoras y la variable objetivo Sleep Quality).
+
+En primer lugar se deberán pasar a factor las variables Gender, Occupation, Marital_Status, Smoking_Habit, Meditation_Practice, Exercise_Type y Stress_Detection. En el caso de Sleep_Quality, también se pasará a factores pero primero debemos ver y reagrupar los valores que toma (puesto que hay valores con decimales).
+
+También se deberán recodificar las variables Wake_Up_Time y Bed_Time para que tomen valores de 0 a 23 respectivamente para tratar las horas como una variable numérica.
+
+A tener en cuenta que en esta segunda variable, en ocasiones toma valores 1:00 AM, que parece "temprano" pero en realidad es tarde ya que es el día siguiente. Para arreglarlo, se va a convertir esa variable a un horario continuo donde la noche se va a extender más allá de las 24h para poder tener en cuenta estos valores.
+
+### Paso a Factor
+
+```{r}
+datos$Gender <- factor(
+  ifelse(datos$Gender == "Male", 1, 2),
+  levels = c(1, 2),
+  labels = c("Male", "Female"))
+
+datos$Occupation <- as.factor(datos$Occupation)
+
+datos$Marital_Status <- factor(
+  ifelse(datos$Marital_Status == "Single", 0,
+         ifelse(datos$Marital_Status == "Married", 1, 2)),
+  levels = c(0, 1, 2),
+  labels = c("Single", "Married", "Divorced")
+)
+
+#datos$Sleep_Quality <- as.factor(datos$Sleep_Quality)
+
+datos$Wake_Up_Time <- hour(parse_date_time(datos$Wake_Up_Time, orders = c("h:M p", "H:M")))
+datos$Bed_Time <- hour(parse_date_time(datos$Bed_Time, orders = c("h:M p", "H:M")))
+# Ajustamos para que horas tempranas (0-5 am) sean consideradas como tarde
+datos$Bed_Time <- ifelse(datos$Bed_Time < 6, datos$Bed_Time + 24, datos$Bed_Time)
+
+datos$Smoking_Habit <- factor(
+  ifelse(datos$Smoking_Habit == "No", 1, 2),
+  levels = c(1, 2),
+  labels = c("No", "Yes"))
+
+datos$Meditation_Practice <- factor(
+  ifelse(datos$Meditation_Practice == "No", 1, 2),
+  levels = c(1, 2),
+  labels = c("No", "Yes"))
+
+datos$Exercise_Type <- as.factor(datos$Exercise_Type)
+
+datos$Stress_Detection <- factor(
+  ifelse(datos$Stress_Detection == "Low", 1,
+         ifelse(datos$Stress_Detection == "Medium", 2, 3)),
+  levels = c(1, 2, 3),
+  labels = c("Low", "Medium", "High")
+)
+
+```
+
+Se confirma que todos los cambios se han hecho correctamente
+
+```{r}
+str(datos)
+```
+
+Y se revisan los valores que toma la variable Bed_Time
+
+```{r}
+histogram(datos$Bed_Time)
+```
+
+Al haber realizado la modificación en como se tratan las horas, se observa que efectivamente hay individuos que se van a la cama pasado media noche.
+
+## Reagrupación de Categorías
+
+### Sleep_Quality
+
+Primero y más importante, se deben comprobar los valores que toma la variable objetivo, ya que si desde el comienzo se encuentra muy desbalanceada, podemos tener muchos problemas de cara a futuro en la predicción.
+
+```{r}
+table(datos$Sleep_Quality)/nrow(datos)
+```
+
+Observamos que toma muchos valores intermedios. Esto se debe a que es un indicador personal de cada individuo en función de lo que el siente que ha experimentado entre un rango de 1 y 5. Como hay muchos valores que cuentan con un porcentaje de individuos muy pequeño, se van a hacer nuevos rangos.
+
+El primero tomará todos los valores por debajo o igual a 3.4 (Pobre), el segundo los valores desde 3.5 hasta 3.8 (Aceptable), aquellos que hayan calificado su descanso como 3.9 o 4 (Bueno) y un úlitmo rango que toma valores superiores a 4 hasta 5 (Excelente).
+
+La partición se hace de esta manera porque, al ver la distribución de individuos original se observa como un 27% de los mismos han valorado su descanso con un 4, lo que haría que, en cualquier categoría donde se encontrase este valor estuviera muy desbalanceada.
+
+```{r}
+datos$Sleep_Quality <- cut(
+  datos$Sleep_Quality,
+  breaks = c(-Inf, 3.4, 3.8,  4, Inf),
+  labels = c("Pobre", "Aceptable", "Buena", "Excelente")
+)
+
+datos$Sleep_Quality <- factor(datos$Sleep_Quality, 
+                                    levels =c("Pobre", "Aceptable", "Buena", "Excelente"))
+
+table(datos$Sleep_Quality)/nrow(datos)
+```
+
+Con esta nueva partición se observa que las categorías están ligeramente desbalanceadas, pero no parece muy grave, entorno al 21% de los datos respectivamente se encuentran en Pobre y Excelente mientras que hay un 23% en Aceptable y el 34% restante se encuentra en Bueno
+
+En caso de que esta partición no funcionase correctamente, quizás se reagruparían de otra manera.
+
+### Occupation
+
+La variable Occupation toma muchos valores, por ello, se van a estudiar dichos valores y reagruparlos
+
+```{r}
+table(datos$Occupation)/nrow(datos)
+```
+
+A la vista de los puestos de trabajo, vamos a reagruparlos en 4 nuevas categorías (Ciencia, Público, Creativo y Práctico y Económico)
+
+```{r}
+datos$Occupation <- case_when(
+
+  datos$Occupation %in% c(
+    "Data Analyst","Data Engineer","Data Scientist","Database Administrator",
+    "Software Developer","Software Engineer","Software Architect","Software Tester",
+    "Web Developer","Developer",
+    "IT Consultant","IT Manager","IT Specialist","IT Support","IT Support Specialist",
+    "Network Engineer","Network Administrator",
+    "Scientist","Physicist","Biologist",
+    "Research Analyst","Research Assistant","Research Scientist","Researcher",
+    "Engineer","Civil Engineer","Electrical Engineer","Mechanical Engineer",
+    "Architect","Laboratory Technician"
+  ) ~ "Ciencia",
+  
+  datos$Occupation %in% c(
+    "Doctor","Physician","Surgeon","Dentist",
+    "Nurse","Nurse Practitioner",
+    "Therapist","Physiotherapist","Psychologist",
+    "Pharmacist",
+    "Healthcare Assistant","Medical Assistant",
+    "Nutritionist","Nutritional Specialist",
+    "Veterinarian",
+    "Fitness Trainer","Fitness Instructor","Personal Trainer",
+    "Waitress","Bartender","Chef","Baker","Bakery Owner",
+    "Shopkeeper","Retail Worker","Retail Manager","Restaurant Manager",
+    "Event Planner","Event Manager","Event Coordinator",
+    "Receptionist","Customer Support","Courier",
+    "Hair Stylist","Nanny","Social Worker","Freelancer",
+    "Digital Marketer","Marketing Executive",
+    "Pilot", "Civil Servant", "Police Officer", "Secretary",
+    "CEO","Manager","Executive Director",
+    "Operations Manager","Product Manager","Program Manager","Project Manager","Project Coordinator",
+    "Business Owner","Entrepreneur","Retired","Student", "Marketing Manager", "Advertising Manager", "Advertising Executive", "Brand Manager"
+  ) ~ "Público",
+
+  datos$Occupation %in% c(
+    "Teacher","Primary School Teacher",
+    "Artist","Musician","Writer","Photographer","Journalist","Editor",
+    "Graphic Designer","UX Designer","Designer","Fashion Designer",
+    "Content Creator","Content Writer","Content Strategist","Copywriter",
+    "Interior Designer","Product Designer","Handicrafts Maker","Weaver","Potter", "Actor",
+    "Mechanic","Electrician","Plumber",
+    "Carpenter","Blacksmith","Technician","Electrical Technician",
+    "Factory Worker","Construction Worker","Construction Manager","Construction Engineer",
+    "Driver","Taxi Driver","Truck Driver","Delivery Driver","Bus Driver",
+    "Farmer","Fisherwoman","Flower Seller","Vegetable Vendor","Street Vendor",
+    "Security Guard","Security Officer","Firefighter",
+    "Cleaner","Janitor","Cobbler","Tailor","Seamstress",
+    "Painter","Warehouse Worker"
+  ) ~ "Creativo y práctico",
+  
+  datos$Occupation %in% c(
+    "Accountant","Account Manager",
+    "Financial Analyst","Financial Advisor","Financial Planner",
+    "Bank Manager","Banker",
+    "Business Analyst","Business Consultant","Consultant",
+    "HR Manager","HR Specialist","HR Executive","Human Resources","Human Resources Manager",
+    "Marketing Specialist","Marketing Executive","Marketing Director","SEO Specialist",
+    "Sales Executive","Sales Representative","Sales Manager","Salesperson",
+    "Insurance Agent","Real Estate Agent","Lawyer","Librarian","Public Relations Specialist"
+  ) ~ "Económico",
+
+  TRUE ~ "Sin Clasificar"
+)
+
+datos$Occupation <- factor(datos$Occupation)
+table(datos$Occupation)/nrow(datos)
+```
+
+Ahora que la variable se encuentra recodificada, se puede observar que las categorías se encuentran más o menos equilibradas y será más cómodo trabajar con ellas.
+
+### Excercise_Type
+
+Además, se van a revisar también los valores y el número de individuos en las distintas categorías de la variable Excersice_Type para que no haya categorías muy desbalanceadas
+
+```{r}
+table(datos$Exercise_Type)
+```
+
+Se observa que en Aerobics, Walking y Meditation hay muy pocos individuos. Vamos a recodificar la variable de manera que Walking y Aerobics estarán incluidas en la categoría Cardio y Meditation y Pilates se combinarán con la categoría Yoga
+
+```{r}
+datos$Exercise_Type <- case_when(
+  datos$Exercise_Type %in% c("Cardio", "Walking", "Aerobics") ~ "Cardio",
+  datos$Exercise_Type == "Strength Training" ~ "Fuerza",
+  datos$Exercise_Type %in% c("Yoga", "Pilates", "Meditation") ~ "Cuerpo y Mente",
+  TRUE ~ "Otros"
+)
+
+datos$Exercise_Type <- factor(datos$Exercise_Type)
+table(datos$Exercise_Type)
+```
+
+## Summary
+
+Finalmente antes de comenzar a realizar los modelos y con ayuda de la función summary() se va a confirmar que no hay ninguna variable con datos ausentes o atípicos
+
+```{r}
+summary(datos)
+```
+
+Se observa que no hay ningún dato atípico, las variables están bien codificadas y toman valores dentro de rangos normales.
+
+Se puede comenzar a realizar el estudio.
+
+# División Entrenamiento-Prueba
+
+Antes de comenzar a construir los modelos, se va a realizar la división entrenamiento-prueba para poder así contar con un subconjunto de datos diferente para evaluar el modelo más adelante.
+
+Para ello, se asignará el 80% de los datos a entrenamiento y el 20% restante a prueba manteniendo las proporciones de cada categoría de la variable objetivo Sleep_Quality.
+
+```{r}
+set.seed(12345)
+trainIndex <- createDataPartition(datos$Sleep_Quality, p=0.8, list=FALSE)
+data_train <- datos[trainIndex,]
+data_test <- datos[-trainIndex,]
+```
+
+# Modelo GLM
+
+La variable objetivo Sleep_Quality es una variable ordinal, es decir, es una variable categórica que cuenta con un orden natural entre sus categorías pero la distancia entre estas no es necesariamente constante.
+
+Debido a la naturaleza de la misma, para seleccionar el mejor modelo GLM vamos a hacer regresión ordinal y multinomial.
+
+La regresión ordinal aprovecha el orden de las categorías, suele ser más eficiente que la multinomial y cuenta con menos parámetros ya que requiere menos datos. Entre sus limitaciones se encuentra que no hay probabilidades individuales por categoría directamente sin transformaciones.
+
+Por otra parte, la regresión multinomial es categórica pero no asume orden, calcula la probabilidad de cada cada categoría suceda frente a una de referencia. Es flexible puesto que permite efectos diferentes para cada categoría con respecto a la de referencia pero pierde la información del orden, requiere de más parámetros y su interpretación será más compleja.
+
+## Regresión Ordinal
+
+Antes de comenzar a realizar el modelo, los nombres de las categorías deben cumplir una serie de requisitos para evitar problemas posteriores con las funciones. Como la variable que se va a utilizar ya se encuentran bien codificada ya que no cuenta con tíldes, espacios, números, etc. este paso no es necesario, pero es recomendable mencionarlo.
+
+```{r}
+table(datos$Sleep_Quality)/nrow(datos)
+```
+
+La variable objetivo es de tipo ordinal (pues los niveles se pueden ordenar de manera natural), por lo que es importante verificar que sus niveles están ordenados según su significado para que los modelos funcionen correctamente. La salida anterior permite verificar que es así
+
+A continuación, vamos a construir un primer modelo de regresión logística ordinal con todas las variables independientes disponibles.
+
+### Modelo Inicial
+
+Se va a construir un primer modelo de regresión logísitca ordinal utilizando todas las variables dependientes disponibles.
+
+```{r}
+modeloInicial <- polr(Sleep_Quality ~ ., data=data_train)
+modeloInicial$edf
+summary(modeloInicial)
+```
+
+En esta salida se puede observar el valor de cada uno de los parámetros estimados junto con sus errores estándar y el AIC del modelo.
+
+Este primer modelo cuenta con 29 parámetros.
+
+A destacar que esta salida no muestra los p-valores pero incluye los valores t en los que se basa. Como el número de observaciones es grande, la distribución a aplicar se asemeja mucho a una distribución normal por lo que podemos tomar como valor de referencia \|1.96\| para determinar si los parámetros son significativos al 95%.
+
+En este caso, se observa que hay 10 parámetros significativos.
+
+Respecto a los parámetros alpha (intercepts) no se interpretan ni contrasta si son significativametne distintos de 0.
+
+Este tipo de modelos suelen ser más rígidos que modelos multinomiales y pueden resultar de peor calidad en ocasiones.
+
+Para estudiar la significatividad de las variables y obtener una ordenación de utilidad vamos a aplicar el análisis de tipo II
+
+```{r}
+Anova(modeloInicial, type = "II")
+```
+
+Se observan 8 variables significativas al 5% y se ve que las variables más importantes son Social_Interactions, Work_Hours, Exercise_Type, Alcohol_Intake, Wake_Up_Time y Travel_Time.
+
+### Modelo 2 con Variables Importantes
+
+Vamos a generar un segundo modelo con las 6 variables más importantes
+
+```{r}
+modelo2<-polr(Sleep_Quality ~ Social_Interactions + Work_Hours  + Alcohol_Intake + Wake_Up_Time + Caffeine_Intake + Travel_Time, data=data_train)
+summary(modelo2) 
+```
+
+Observamos ahora que no todos los parámetros son significativos como tipo de ejercicio cuando toma la categoría Fuerza o Cuerpo y Mente o variables que si parecían importantes como Travel_Time. Además, el AIC es mayor al del modelo con todo (pasa de 1511 a 1538).
+
+Para verificar si estamos prescindiendo de variables necesarias, vamos a usar la función add1()
+
+```{r}
+add1(modelo2, scope=formula(modeloInicial),test = "Chisq")
+```
+
+Se verifica que, efectivamente, hay varias variables que aportarían información relevante al modelo (las más importantes serían Caffeine_Intake o Blood_Preassure pero otras como Alcohol_Intake o Blood_Sugar_Level también podrían influir).
+
+### Modelo Automático
+
+Dado que el modelo construido manualmente seguramente sea demasiado sencillo, se van a obtener otra serie de modelos aplicando los métodos automáticos de selección de variables.
+
+Se deben construir dos modelos iniciales, uno máximo y otro mínimo y se aplicaran los 3 métodos de selección de variables (Forward, Backward y Step-Wise) y los 2 criterios de selección (AIC y BIC).
+
+```{r}
+null<-polr(Sleep_Quality ~ 1, data=data_train)
+full<-polr(Sleep_Quality ~ ., data=data_train)
+modeloStepBIC<-step(null, scope=list(lower=null, upper=full), direction="both",
+                    k=log(nrow(data_train)),trace=F)
+modeloStepAIC<-step(null, scope=list(lower=null, upper=full), direction="both",trace=F)
+modeloForwBIC<-step(null, scope=list(lower=null, upper=full), direction="forward",
+                    k=log(nrow(data_train)),trace=F)
+modeloForwAIC<-step(null, scope=list(lower=null, upper=full), direction="forward",trace=F)
+modeloBackBIC1<-step(full, scope=list(lower=null, upper=full), direction="backward",
+                    k=log(nrow(data_train)),trace=F)
+modeloBackAIC<-step(full, scope=list(lower=null, upper=full), direction="backward",trace=F)
+modelos<-list(modeloStepBIC,modeloStepAIC,modeloForwBIC,modeloForwAIC,modeloBackBIC1,
+              modeloBackAIC)
+map(modelos,function(x) x$call)
+map_int(modelos,function(x) x$edf)
+```
+
+Los 6 procesos dan como resultado a 4 modelos distintos, con 10, 11 y 17 parámetros respectivamente.
+
+El modelo de 10 parámetros y el de 11 son iguales, salvo que el último contiene además la variable sleep_duration y los de 17 parámetros añaden además Gender, Bed_Time, Smoking_Habit, Marital_Status y uno de ellos añade Screen_Time mientras que el otro hace uso de Physical_Activity.
+
+Para poder determinar cuál de los modelos es mejor, se va a recurrir a la validación cruzada repetida, gracias a la cual se podran evaluar los modelos mediante las medidas ya estudiadas.
+
+Se van a generar los valores de múltiples métricas, como la tasa de acierto (acc) o el índice Kappa (tanto ponderado como sin ponderar), y guardar los resultados de los cuatro modelos en la lista "vcrTodosModelos" (el modelo generado con las 6 variables más importantes y los 4 modelos distintos que se acaban de obtener con selección automática).
+
+```{r}
+my_summary  <- function(data, lev = NULL, model = NULL){
+  a1 <- multiClassSummary(data, lev, model)
+  b1 <- vcd::Kappa(table(data[, "pred"],data[, "obs"]))$Weighted[1]
+  out <- c(a1, Wkappa=b1)
+  out
+}
+modelos<-list(modeloForwBIC, modeloForwAIC, modeloBackBIC1, modeloBackAIC)
+vcrTodosModelos<-list()
+for (i in 1:length(modelos)){
+  set.seed(1712)
+  vcr <- caret::train (formula(modelos[[i]]),
+                data = data_train, method = "polr",
+                tuneGrid = expand.grid(method="logistic"),
+                trControl = trainControl(method = "repeatedcv",
+                                         number = 5, repeats=20,
+                                         classProbs = TRUE,
+                                         summaryFunction = my_summary)
+  )
+  vcrTodosModelos[[i]]<-vcr
+}
+```
+
+A continuación, se representan en diagramas de cajas y se obtienen algunos estadísticos de las repeticiones
+
+```{r}
+names(vcrTodosModelos)<-paste0("Model",1:length(modelos), "_",sapply(modelos,function(x) x$edf))
+bwplot(resamples(vcrTodosModelos),metric=c("AUC","Kappa","Accuracy","Wkappa.value"),
+       scales = list(x = list(relation = "free")))
+summary(resamples(vcrTodosModelos),metric=c("AUC","Kappa","Accuracy","Wkappa.value"))
+```
+
+Para determinar el mejor modelo, se estudia la capacidad predictiva, variabilidad y número de parámetros de los modelos.
+
+La capacidad predictiva se evalúa observando la mediana. Queremos la mediana más alta para un mejor rendimiento. Observamos como los modelos de 10 y 11 parámetros muestran medianas ligeramente superiores en Kappa y Wkappa y Accuracy
+
+La variabilidad se mide por la dispersión de los resultados. Un modelo será más estable cuanto más estrechos sean su caja y bigotes. Todos los modelos muestran una variabilidad similar pero en general los modelos de más paráemtros parecen tener cajas más estrechas, lo que sugiere mayor estabilidad
+
+Finalmente, el principio de parsimonia sugiere elegir el modelo más simple (con menor número de parámetros) que explique tan bien los datos como un modelo más complejo.
+
+Realizado el estudio, y buscando el mejor equilibrio entre capacidad predictiva, variabilidad y número de parámetros, el modelo más prometedor es el Model3_10, es decir BackBIC, ya que es de los que menos parámetros tiene, su rendimiento es muy similar a los modelos de 17 parámetros aún reduciendo en un 30% su número de parámetros y todos los valores entre modelos son muy cercanos, por lo que nos quedamos con el más sencillo.
+
+### Modelo BackBIC
+
+Seleccionado el mejor modelo, se obtienen los ODDSratio del mismo y se va a realizar una evaluación y análisis final mediante los datos de prueba
+
+#### ODDSratio
+
+En primer lugar, se observa la exponencial de los coeficientes junto con su significatividad.
+
+```{r}
+stargazer(modeloBackBIC1, type="text", report=('vc*p'), apply.coef=exp, p.auto=F)
+```
+
+Todos los parámetros son significativos.
+
+La interpretación de los parámetros es la siguiente
+
+-   Wake_Up_Time: Por cada hora adicional en que tarde en despertarse, las posibilidades de tener una percepción de calidad de sueño mayor aumentan en un 37%.
+
+-   Caffeine_Intake: Por cada taza de café adicional ingerida en el día, las posibilidades de tener una percepción de calidad de sueño mayor aumentan en un 56%.
+
+-   Alcohol_Intake: Por cada bebida alcohólica adicional que se tome durante la semana, las posibilidades de tener una percepción de calidad de sueño mayor aumentan en un 53%.
+
+-   Work_Hours: Por cada hora adicional que se trabaje, las posibilidades de tener una percepción de calidad de sueño mayor disminuyen en un 36%.
+
+-   Travel_Time: Por cada hora adicional que haya que emplear en transporte, las posibilidades de tener una percepción de calidad de sueño mayor disminuyen en un 41%.
+
+-   Social_Interactions: Por cada interacción social adicional durante la semana, las posibilidades de tener una percepción de calidad de sueño mayor aumentan casi por 3,5.
+
+-   Blood_Sugar_Level: Finalmente, por cada mg/dL adicional de nivel de azúcar en sangre, las posibilidades de tener una percepción de calidad de sueño mayor aumentan en un 4%.
+
+Para completar el estudio de las variables que componen el modelo, se realiza nuevamente el análisis de tipo II, detectando las variables más importantes.
+
+```{r}
+Anova(modeloBackBIC1,type = "II")
+```
+
+Se observa como la variable más importante sigue siendo Social_Interactions seguida de Work_Hours, Blood_Sugar_Level y Travel_Time
+
+### Evaluación del Modelo
+
+Finalmente, se obtienen las medidas de evaluación del modelo
+
+```{r}
+cm_test<-confusionMatrix(table(predict(modeloBackBIC1,newdata=data_test),data_test$Sleep_Quality))
+cm_test$table
+
+cm_test$overall[1:2]
+
+cm_test$byClass[,1:2]
+```
+
+Se observa que en términos generales no parece ser un muy buen modelo, pues cuenta con una tasa de acierto del 44% y un índice kappa del 20%.
+
+A pesar de que es capaz de detectar de manera bastante sólida cuando una observacion no pertenece a las clases Pobre, Aceptable o Excelente, no se le da especialmente bien clasificar correctamente una observación en ninguna de las clases.
+
+Obtenemos el kappa ponderado para ampliar el estudio 
+
+```{r}
+summary(Kappa(cm_test$table))
+```
+
+
+## Regresión Multinomial
+
+Como se ha dicho al empezar el modelo de regresion ordinal, también vamos a evaluar el modelo multinomial. Para ello vamos a generar un primer modelo multinomial que contenga todas las variables.
+
+### Modelo Inicial
+
+```{r}
+modeloInicial<-multinom(Sleep_Quality ~ ., data=data_train)
+```
+
+Este primer modelo cuenta con 81 parámetros ya que el valor que aparece entre paréntesis denominado como variable en realidad nos muestra el número de parámetros. Como el proceso converge, el resultado obtenido es óptimo
+
+Para poder conocer más información del modelo vamos a recurrir a la función summary().
+
+```{r}
+summary(modeloInicial)
+```
+
+Como se mencionaba y debido a la naturaleza de este tipo de modelos, hablar sobre los valores de los parámetros y como afectan a cada categoría de la variable objetivo respecto a la categoría de referencia (Pobre) se hace un proceso costoso y largo.
+
+Para poder comparar con el resultado obtenido a partir de la regresión ordinal se procede a crear los modelos automáticos y seleccionar el mejor de los mismos
+
+### Modelo Automático
+
+```{r}
+null <- multinom(Sleep_Quality ~ 1, data = data_train, trace=F)
+full <- multinom(Sleep_Quality ~ ., data = data_train, trace=F)
+invisible(capture.output({ # Esto se incluye para evitar la aparición del texto "trying..."
+  modeloStepBIC<-step(null, scope=list(lower=null, upper=full), direction="both", k=log(nrow(data_train)), trace=F)
+  modeloStepAIC<-step(null, scope=list(lower=null, upper=full), direction="both", k=2, trace=F)
+  modeloForwBIC<-step(null, scope=list(lower=null, upper=full), direction="forward", k=log(nrow(data_train)),trace=F)
+  modeloForwAIC<-step(null, scope=list(lower=null, upper=full), direction="forward", k=2, trace=F)
+  modeloBackBIC<-step(full, scope=list(lower=null, upper=full), direction="backward", k=log(nrow(data_train)),trace=F)
+  modeloBackAIC<-step(full, scope=list(lower=null, upper=full), direction="backward", k=2, trace=F)
+}))
+modelos<-list(modeloStepBIC,modeloStepAIC,modeloForwBIC,modeloForwAIC,modeloBackBIC,modeloBackAIC)
+map(modelos,function(x) x$call) 
+map_int(modelos,function(x) x$edf) 
+```
+
+En esta ocasión se obtienen 2 modelos, con 21 y 45 parámetros respectivamente.
+
+Para poder determinar cuál de los modelos es mejor, se va a recurrir a la validación cruzada repetida, gracias a la cual se podran evaluar los modelos mediante las medidas ya estudiadas.
+
+Se van a generar los valores de múltiples métricas, como la tasa de acierto (acc) o el índice Kappa (tanto ponderado como sin ponderar), y guardar los resultados de los cuatro modelos en la lista "vcrTodosModelos" (el modelo generado con las 6 variables más importantes y los 4 modelos distintos que se acaban de obtener con selección automática).
+
+```{r}
+my_summary  <- function(data, lev = NULL, model = NULL){
+  a1 <- multiClassSummary(data, lev, model)
+  b1 <- vcd::Kappa(table(data[, "pred"],data[, "obs"]))$Weighted[1]
+  out <- c(a1, Wkappa=b1)
+  out
+}
+modelos<-list(modeloForwBIC, modeloForwAIC)
+vcrTodosModelos<-list()
+for (i in 1:length(modelos)){
+  set.seed(1712)
+  vcr <- caret::train (formula(modelos[[i]]),
+                data = data_train, method = "polr",
+                tuneGrid = expand.grid(method="logistic"),
+                trControl = trainControl(method = "repeatedcv",
+                                         number = 5, repeats=20,
+                                         classProbs = TRUE,
+                                         summaryFunction = my_summary)
+  )
+  vcrTodosModelos[[i]]<-vcr
+}
+```
+
+A continuación, se representan en diagramas de cajas y se obtienen algunos estadísticos de las repeticiones
+
+```{r}
+names(vcrTodosModelos)<-paste0("Model",1:length(modelos), "_",sapply(modelos,function(x) x$edf))
+bwplot(resamples(vcrTodosModelos),metric=c("AUC","Kappa","Accuracy","Wkappa.value"),
+       scales = list(x = list(relation = "free")))
+summary(resamples(vcrTodosModelos),metric=c("AUC","Kappa","Accuracy","Wkappa.value"))
+```
+
+Por el principio de parsimonia y a la vista de la falta de diferencia tanto en capacidad predictiva como en variabilidad, optamos por el modelo con menor número de parámetros formulado a través de ForwBIC.
+
+### Modelo ForwBIC
+
+Seleccionado el mejor modelo, se obtienen los ODDSratio del mismo y se va a realizar una evaluación y análisis final mediante los datos de prueba
+
+#### ODDSratio
+
+En primer lugar, se observa la exponencial de los coeficientes junto con su significatividad.
+
+```{r}
+stargazer(modeloForwBIC, type="text", report=('vc*p'), apply.coef=exp, p.auto=F)
+Anova(modeloBackBIC, type = "II")
+```
+
+En este caso, se obtiene para cada variable como influye en cada una de las categorías de la variable objetivo Sleep_Quality a partir de la categoría de referencia Pobre.
+
+Respecto al Género, se observa como ser mujer disminuye las posibilidades de tener una percepción de calidad de sueño Aceptable respecto a Pobre en un 58%, de Buena respecto a Pobre en un 55% y de Excelente respecto a Pobre en un 62%.
+
+Sin embargo, en variables como como la presión sanguínea, un incremento unitario en la presión no influye en las posibilidades de una percepcion de calidad de sueño Aceptable respecto a Pobre ni Buena respecto a Pobre pero si aumentan en un 9% de Excelente respecto a Pobre.
+
+### Evaluación del Modelo
+
+Finalmente, se obtienen las medidas de evaluación del modelo
+
+```{r}
+cm_test<-confusionMatrix(table(predict(modeloForwBIC,newdata=data_test),data_test$Sleep_Quality))
+cm_test$table
+
+cm_test$overall[1:2]
+Kappa(cm_test$table)
+cm_test$byClass[,1:2]
+```
+
+Comparando los resultados de este modelo respecto a los obtenidos con el modelo de regresión ordinal, las métricas de tasa de acierto e indice kappa han aumentado en 7 puntos porcentuales respectivamente y aproximadamente pero, respecto a sensibilidad y especificidad todas las métricas se han acercado más a 0.5, por lo que el modelo no es especialmente bueno clasificando las observaciones.
+
+### Hipótesis de proporcionalidad
+
+Vamos a evaluar un modelo multinomial con las mismas variables que hemos obtenido en el mejor modelo ordinal
+
+```{r}
+modelo_multinom<-multinom(formula(modeloBackBIC1), data=data_train)
+
+cm_test_multi<-confusionMatrix(table(predict(modelo_multinom,newdata=data_test),data_test$Sleep_Quality))
+cm_test_multi$overall[1]
+Kappa(cm_test_multi$table)
+lrtest(modeloBackBIC,modelo_multinom)
+```
+
+
+Visto como ninguno de los dos modelos funciona especialmente bien para nuestra base de datos, procedemos a trabajar modelos de predicción basados en árboles
+
+
+# Modelo Árboles
+
+En esta ocasión y de manera análoga a lo que sucedía con los modelos GLM podemos realizar árboles tanto ordinales como de clasificación.
+
+Los árboles ordinales están especialmente diseñados para variables categóricas ordinales. Es importante destacar que aunque es posible construir modelos de clasificación para variables ordinales ignorando la componente ordinal, si el orden de los niveles es importante, como sucede en nuestro caso, es preferible optar por estos pues están diseñados para respetar dicho orden, por lo que sólo se realizarán árboles de este tipo
+
+## Recodificación de la variable
+
+La función que genera los árboles ordinales precisa que las variables dependientes estén codificadas como numéricas asignando un número según el orden de menor a mayor.
+
+Una vez este codificada correctamente, se realiza nuevamente la partición entrenamiento prueba
+
+```{r}
+datos$Sleep_Quality<-car::recode(datos$Sleep_Quality, as.factor = FALSE,
+                              "'Pobre'=1;'Aceptable'=2;'Buena'=3;'Excelente'=4")
+
+set.seed(12345)
+trainIndex <- createDataPartition(datos$Sleep_Quality, p=0.8, list=FALSE)
+data_ord_train <- datos[trainIndex,]
+data_ord_test <- datos[-trainIndex,]
+```
+
+## Modelo Inicial
+
+Para ver una primera modelización, vamos a partir de un árbol con tamaño de hoja mínimo del 5%, indicando que no realice la poda ni obtenga reglas sustitutas.
+
+A partir de este árbol generaremos más adelante otros para poder determinar el tamaño mínimo de hoja, parámetro de la poda y número de reglas sustitutas que mejor nos puedan ayudar en un futuro a tomar decisiones
+
+```{r}
+set.seed(12345)
+arbolOrd5 <- rpartScore(Sleep_Quality~., data = data_ord_train,
+                       minbucket=ceiling(0.05*nrow(data_ord_train)),
+                       cp=0, maxsurrogate = 0, maxcompete=0)
+sum(arbolOrd5$frame$var == "<leaf>") 
+rpart.plot(arbolOrd5, nn=TRUE, tweak = 1.2) 
+```
+
+Vemos que se ha construido un árbol con 11 hojas y una profundidad de 6, y que el resultado aparece con una gama de colores donde los claros corresponden con los niveles bajos de la variable, es decir calidad de sueño percibida Pobre o Aceptable y los oscuros son los altos, Buena o Excelente.
+
+Cada nodo muestra la categoría predicha y observamos que al menos hay dos nodos para cada categoría.
+
+Aquellos con mejor percepción de calidad de sueño son aquellos que han tenido más de 3 interacción sociales en la semana y han dormido más de 7.3 horas o, habiendo dormido menos de 7 horas, contaban con un nivel de presión en sangre mayor a 138 y habían empleado en transporte más de 4,5h.
+
+Sin embargo, para asegurar el mejor árbol posible, es preferible dejar que crezca siendo más flexibles con el tamaño mínimo de hoja y asi poder podarlo. Por ello, construimos un arbol con el 1%.
+
+```{r}
+set.seed(12345)
+arbolOrd1 <- rpartScore(Sleep_Quality~., data = data_ord_train,
+                       minbucket=ceiling(0.01*nrow(data_ord_train)),
+                       cp=0, maxsurrogate = 0, maxcompete=0)
+rpart.plot(arbolOrd1, nn=TRUE, tweak = 1.2) 
+```
+
+Ahora el árbol es prácticamente imposible de ver ya que es muy grande.
+
+Obtenemos una serie de métricas para ver las diferencias entre este árbol y el anterior
+
+```{r}
+modelos<-list(arbolOrd5,arbolOrd1)
+
+sapply(modelos,
+       function(x) Kappa(table(factor(predict(x,newdata=data_ord_train),1:max(data_ord_train$Sleep_Quality)), data_ord_train$Sleep_Quality))$Weighted[1])
+
+sapply(modelos,
+       function(x) Kappa(table(factor(predict(x, newdata=data_ord_test),1:max(data_ord_test$Sleep_Quality)),data_ord_test$Sleep_Quality))$Weighted[1])
+
+sapply(modelos,function(x) sum(x$frame$var == "<leaf>"))
+```
+
+Hemos construido un árbol con 31 hojas pero que permite aumentar el índice kappa ponderado significativamente tanto en entrenamiento como en prueba.
+
+De igual manera, ha aumentado el sobreajuste, por lo que vamos a podar el árbol para procurar conseguir un tamaño de árbol más manejable, con similar capacidad predictiva y, a poder ser, reduciendo el sobreajuste.
+
+## Poda del Árbol
+
+```{r}
+arbolOrd1$cptable
+plotcp(arbolOrd1, las=2)
+lines(arbolOrd1$cptable[,3], col="red", type = "b")
+```
+
+Se observa la mejora relativa. Se observa que a partir de las 13 hojas el error relativo no disminuye significativamente, por lo que podríamos podar el árbol a ese tamaño.
+
+No obstante y teniendo en cuenta que en árboles se persigue el equilibrio entre la interpretabilidad y capacidad predictiva, un tamaño de 9 también podría ser razonable.
+
+Respecto al sobreajuste, se observa que este es menor en 9 hojas respecto a 13.
+
+Dado que la métrica graficada puede ser algo confusa, generamos una métrica para ver como varía el kappa ponderado en función del número de hojas
+
+```{r}
+set.seed(12345)
+CVresults<-xpred.rpart(arbolOrd1, return.all =T)
+kappaPondCV<-apply(CVresults, 2, 
+                function(x) Kappa(table(factor(x,1:max(data_ord_train$Sleep_Quality)),
+                                        data_ord_train$Sleep_Quality))$Weighted[1])
+plot(arbolOrd1$cptable[,2]+1, kappaPondCV, type="b", xlab = "Número de hojas")
+```
+
+Como estamos trabajando con una variable ordinal, lo más conveniente es recurrir al kappa ponderado. Viendo el gráfico volvemos a los mismos resultados, a partir de las 13 hojas apenas hay mejoras pero con 9 hojas también se pueden obtener buenos resultados.
+
+Por tanto, procedemos a llevar a cabo dicha poda escribiendo manualmente el valor de alpha para 9 hojas
+
+```{r}
+arbolOrd1_podado<-prune(arbolOrd1,cp=0.022)
+rpart.plot(arbolOrd1_podado, nn=TRUE, tweak=1.1, digits=3) 
+```
+
+Observamos un árbol de 9 hojas y profundidad de 5, con hojas de distinta tonalidades.
+
+Se observa como 3 de ellas están asociadas a calidad de sueño percibida Excelente, y el resto de categorías tienen 2 hojas asociadas cada una de ellas.
+
+## Grado de Credibilidad
+
+Para conocer el grado de credibilidad de las predicciones, creamos una nueva representación gráfica del árbol donde se muestra un gráfico de barras para cada hoja
+
+```{r}
+plot(as.party(arbolOrd1_podado), gp = gpar(fontsize = 4), terminal_panel = node_barplot)
+```
+
+Se observa que las hojas más creibles son las asociadas a la categoria 1, es decir, calidad de sueñño percibida Pobre y las dos más a la derecha asociadas a la categoría 4 Excelente. Esto tiene sentido puesto que, por lo general, aquellas poblaciones en los extremos suelen tener características muy diferenciativas respecto a categorías centrales. Aún así, a excepción de la hoja central, todas ellas tienen una categoría de predicción significativamente mayor en porcentaje frente al resto de categorías en la misma hoja bastante notoria.
+
+## Evaluación del Modelo
+
+Finalemnte, realizamos una evaluación del modelo generado tanto para el conjunto de entrenamiento como para el de prueba
+
+```{r}
+cm<-confusionMatrix(table(factor(predict(arbolOrd1_podado, newdata=data_ord_train),1:max(data_ord_train$Sleep_Quality)),data_ord_train$Sleep_Quality))
+cm$overall[1]
+Kappa(cm$table)
+cm$byClass[,1:2]
+
+cm_test<-confusionMatrix(table(factor(predict(arbolOrd1_podado, newdata=data_ord_test),1:max(data_ord_test$Sleep_Quality)),data_ord_test$Sleep_Quality))
+cm_test$overall[1]
+Kappa(cm_test$table)
+cm_test$byClass[,1:2]
+```
+
+Al generar un árbol más grande y posteriormente podarlo, hemos obtenido unas métricas **terminar de explicar**
+
+## Importancia de las Variables
+
+Por último, vamos a obtener la importancia de las variables del modelo donde, haciendo uso de la información sobre las divisiones que forman parte del árbol multiplicamos la mejora del índice y el número de observaciones del nodo y las agregamos por variable
+
+```{r}
+auxImportancia<-data.frame(arbolOrd1_podado$splits,
+                           variable=rownames(arbolOrd1_podado$splits))
+impVar<-aggregate(count*improve~variable, auxImportancia, sum)
+barplot(impVar$`count * improve`/sum(impVar$`count * improve`),
+        names.arg=impVar$var, las=2)
+```
+
+De las 6 variables que utiliza nuestro modelo, se observa que la que más influencia tiene es Sleep_Duration con casi el 35%, seguida de Blood_Preassure y Social_Interactions cercanas al 25%
+
+Cabe destacar que se pueden generar reglas sustitutas y, en caso de tener datos faltantes para alguna de las "preguntas" puede ser útil en vez de directamente asociar la observación con la categoría que mayor porcentaje de observaciones contenga
+
+```{r}
+set.seed(12345)
+arbolOrd1_pod_miss <- rpartScore(Sleep_Quality~., data = data_ord_train,
+                                 minbucket=ceiling(0.01*nrow(data_ord_train)),
+                                 cp=0.022, maxsurrogate = 2, maxcompete=0)
+summary(arbolOrd1_pod_miss)
+```
+
+# Modelo Random Forest
+
+A continuación, vamos a generar un modelo RF, donde se introduce cierta aleatoriedad a la hora de generar los árboles para que entre ellos haya menor correlación y, por tanto, una mejora de la capacidad predictiva.
+
+Debido a la naturaleza de nuestra variable objetivo, haremos uso de bosques aleatorios para clasificación donde nos centraremos en predecir si los individuos pertenecen a una categoría u otra.
+
+En este caso, nos tenemos que asegurar de que la variable es de tipo factor. Como en el apartado anterior la hemos codificado como númerica que toma valores 1,2,3 y 4 basta con pasarla nuevamente a factor
+
+```{r}
+datos$Sleep_Quality <- as.factor(datos$Sleep_Quality)
+```
+
+Nuevamente y antes de comenzar con la modelización, llevamos a cabo la partición entrenamiento-prueba
+
+```{r}
+set.seed(12345)
+trainIndex <- createDataPartition(datos$Sleep_Quality, p=0.8, list=FALSE)
+data_clasif_train <- datos[trainIndex,]
+data_clasif_test <- datos[-trainIndex,]
+```
+
+## Modelo Inicial
+
+Comenzamos creando un RF de 500 árboles con un tamaño de hoja equivalente al 5% con ntree y mtry por defecto, que es equivalente a la raíz cuadrada del número de variables explicativas disponibles
+
+```{r}
+set.seed(12345)
+RF5<-randomForest(Sleep_Quality~., data=data_clasif_train, keep.inbag = TRUE,
+                                 nodesize=ceiling(0.05*nrow(data_clasif_train)))
+print(RF5)
+```
+
+Como podemos observar, el modelo da lugar a una tasa de error de 41.77% en las observaciones OOB (out of the bag), es decir, con observaciones que no ha visto o seleccionado para la creación de árboles, una especie de "set de validación".
+
+Es una tasa bastante elevada puesto que es casi la mitad del dataset.
+
+## Selección de Parámetros
+
+Vamos a ir modificando los distintos parámetros para que tenga mejor capacidad predictiva y elimine lo máximo posible el sobreajuste.
+
+Para estudiar el número óptimo de árboles, vamos a recurrir a la librería OOBcurve que permite hacerlo a partir de medidas diferentes a la tasa de error.
+
+```{r}
+auxtask <- makeClassifTask(data = data_clasif_train, target = "Sleep_Quality")
+results_5 <- OOBCurve(RF5, measures = list(kappa),
+                    task = auxtask, data = data_clasif_train)
+
+plot(results_5$kappa, ylab = "oob-kappa", xlab = "ntrees")
+results_5$kappa[c(1,50,100,200,300,400,500)]
+
+```
+
+A partir de los resultados se observa que los mejores se obtienen para unos 300 árboles pero a partir de los 50 el cambio es bastante ligero.
+
+Vamos a probar a continuación a reducir el tamaño de hoja para determinar si se puede dar lugar a mejores resultados
+
+```{r}
+set.seed(12345)
+RF1<-randomForest(Sleep_Quality~., data=data_clasif_train,
+                                          keep.inbag = TRUE,
+                                          nodesize=ceiling(0.01*nrow(data_clasif_train)))
+results1 <- OOBCurve(RF1, measures = list(kappa),
+                    task = auxtask, data = data_clasif_train)
+set.seed(12345)
+RF05<-randomForest(Sleep_Quality~., data=data_clasif_train,
+                                          keep.inbag = TRUE,
+                                          nodesize=ceiling(0.005*nrow(data_clasif_train)))
+results05 <- OOBCurve(RF05, measures = list(kappa),
+                    task = auxtask, data = data_clasif_train)
+
+plot(RF1$err.rate[,1], ylab = "Tasa de fallo", ylim=c(0.35,0.57))
+points(RF5$err.rate[,1], col="red")
+points(RF05$err.rate[,1], col="green")
+
+plot(results1$kappa, ylab = "oob-kappa", xlab = "ntrees", ylim=c(0.1,0.5))
+points(results_5$kappa, col="red")
+points(results05$kappa, col="green")
+```
+
+Disminuir el tamaño de hoja supone una gran mejora en las métricas, existiendo diferencias además entre hojas del 1% y 0.05%, siendo mejor en téerminos generales la hoja menor.
+
+Así mismo, el mejor valor se alcanza cuando el número de árboles está alrededor de 150.
+
+El último parámetro que queda popr determinar es mtry (número de variables entre las que puede elegir para hacer cada una de las divisiones del árbol)
+
+```{r}
+future::plan(multisession, workers=detectCores() - 1)
+mtryValues<-floor(seq(2,ncol(data_clasif_train)-1, length.out=10))
+
+nt<-150
+tunningRF<- future_map(mtryValues, 
+                         ~ {set.seed(12345);
+                           randomForest(Sleep_Quality~., data=data_clasif_train,
+                                        keep.inbag = TRUE,
+                             nodesize=ceiling(0.005*nrow(data_clasif_train)),
+                             ntree=nt,
+                             mtry=.x)}
+                         )
+plan(sequential)
+
+error_rate<-sapply(tunningRF, function(x) x$err.rate[nt,1])
+plot(mtryValues,error_rate,type="b")
+
+Kappas<-sapply(tunningRF, function(x) OOBCurve(x, measures = list(kappa),
+                         task = auxtask, data = data_clasif_train)$kappa[nt])
+plot(mtryValues, Kappas, type="b")
+```
+
+Como podemos observar, ambos indicadores coninciden en el valor óptimo de mtry de 4. Además, se comprueba que esta fuente de aleatoriedad permite resultados mejores respecto al bagging (que sería utilizando las 21 variables predictoras restantes).
+
+## Modelo Ganador
+
+Seleccionados los parámetros de 150 árboles, de tamaño mínimo de hoja de 0.05% y valor mtry = 4, creamos el modelo ganador
+
+```{r}
+RFdef<-tunningRF[[which(mtryValues==4)]]
+print(RFdef)
+```
+
+Se observa que efectivameente la tasa de error ha disminuido de casi un 42% a un 37%, clasifica por lo general mejor las clases aunque en la que más falla es en la última Excelente, donde la mitad de los casos los clasifica bien y la otra mitad no.
+
+Obtenemos una estimación de la calidad de los términos en otros indicadores para la partición prueba
+
+```{r}
+multiclass.roc(data_clasif_train$Sleep_Quality,
+    predict(RFdef,data_clasif_train,type="prob"))$auc
+```
+
+
+## Importancia de Variables
+
+```{r}
+barplot(t(RFdef$importance)/sum(RFdef$importance), las=2)
+```
+
+Respecto a la importancia de variables se observa que la más importante sigue siendo Sleep_Duration, el resto de variables, aunque importantes, están muy repartidas en porcentaje entre ellas.
+
+Esto sucede porque la aleatoriedad añadida con mtry en los RF permite que se aproveche más el potencial predictivo de las variables "no dominantes" o menos importantes en modelos anteriores.
+
+## Evaluación del Modelo
+
+Finalmente, obtenemos una estimación de calidad en la partición de prueba
+
+```{r}
+multiclass.roc(data_clasif_test$Sleep_Quality,
+    predict(RFdef,data_clasif_test,type="prob"))$auc
+
+cm_test<-confusionMatrix(table((predict(RFdef, newdata=data_clasif_test)),data_clasif_test$Sleep_Quality))
+
+cm_test$table
+
+cm_test$overall[1]
+Kappa(cm_test$table)
+cm_test$byClass[,1:2]
+
+```
+
+Como podemos obsevar, se ha creado un modelo con una calidad decente, el AUC estimado es de 0.87, un índice Kappa de 0.5 y tasa de acierto de 63.
+
+Respecto a la sensibilidad y especificidad observamos que todas las categorías cuentan con una especificidad mayor que sensibilidad, es decir, son mejores indicando que observación no pertenece a su categoría que indicar cuales si pero, las categorías Pobre y Aceptable cuentan con una sensibilidad superior a 0.7, que no está mal, Buena llega a 0.57 y Excelente tiene una sensibilidad ligeramente inferior a 0.5. Como veníamos indicando, es la categoría a la que más le cuesta asociar observaciones
+
+## Gráficos de Variables
+
+Aún así, vamos a graficar como las distintas variables importantes influyen a cada categoría
+
+Partiendo de la variable más importate, Sleep_Duration
+
+```{r}
+predictor <- Predictor$new(RFdef, data = data_clasif_train, y = data_clasif_train$Sleep_Quality)
+pdp <- FeatureEffect$new(predictor, feature = "Sleep_Duration", method="pdp")
+pdp$plot()
+
+predictor <- Predictor$new(RFdef, data = data_clasif_train, y = data_clasif_train$Sleep_Quality)
+pdp <- FeatureEffect$new(predictor, feature = "Travel_Time", method="pdp")
+pdp$plot()
+```
+
+Se observa claramente como aquellos que califican su percepción de calidad de sueño como Buena o Excelente duermen entre 6 y 8 horas mientras que aquellos que sienten que han tenido una calidad de sueño Pobre o Aceptable se encuentran mayoritariamente entre las 4 y 6 horas de sueño.
+
+**Se puede hacer algun grafiquillo más, que siempre van bien**
+
+# Modelo Gradient Boosting
+
+Finalmente el último tipo de modelo que vamos a realizar es Gradient Boosting. Sigue más o menos la temática de los Random Forest pero, en vez de crear un montón de árboles distintos entre ellos, van de manera secuencial capturando nueva información. Esto logra una aproximación iterativa al optimo de una determinada función, la cual permite evaliar la capacidad predicitiva del conjunto
+
+## Modelo Inicial
+
+Para poder realizar este tipo de modelos, es necesario que la variable objetivo esté codificada como 0, 1, 2 y 3 y, además, ser de tipo numérico, por lo que hay que hacer dicha modificación previa y luego se realiza la partición
+
+```{r}
+datos$Sleep_Quality<-as.numeric(datos$Sleep_Quality)-1
+
+set.seed(12345)
+trainIndex <- createDataPartition(datos$Sleep_Quality, p=0.8, list=FALSE)
+data_clasif_train <- datos[trainIndex,]
+data_clasif_test <- datos[-trainIndex,]
+```
+
+De manera análoga a los modelos anteriores, comenzamos creando un GB genérico.
+
+Como utilizamos una variable que toma más de dos niveles, en la distribución de los datos indicamos "multinomial" en vez de "bernoulli".
+
+Vamos a realizar 5000 árboles con una tasa de aprendizaje de 0.1, tamaño mínimo de hoja del 5%, utilizando el 75% de los datos como entrenamiento y el 25% restante para validación y una profundidad del árbol 3
+
+```{r}
+set.seed(12345)
+data_clasif_train_reord <- data_clasif_train[sample(nrow(data_clasif_train)),]
+
+set.seed(12345)
+gbm_clasif_5 <- gbm(
+  formula = Sleep_Quality~., data=data_clasif_train_reord,
+  distribution = "multinomial",
+  train.fraction = 0.75,
+  n.trees = 5000,
+  shrinkage = 0.1,
+  bag.fraction = 1,
+  interaction.depth = 3,
+  n.minobsinnode = ceiling(0.05*nrow(data_clasif_train_reord))
+)
+
+print(gbm_clasif_5)
+```
+
+Como podemos observar, se ha construido un GBM para clasificación con 5000 árboles, donde la partición de validación ha indicado que serían sólo necesarios los 69 primeros y se han utilizado todas las variables.
+
+Vamos a representar gráficamente la evolución de la deviance tanto en entrenamiento (negro) como en validación (rojo)
+
+```{r}
+opt_clasif_gbm5<-gbm.perf(gbm_clasif_5)
+abline(h=gbm_clasif_5$valid.error[opt_clasif_gbm5], lty=2, col="darkgray")
+```
+
+La línea vertical indica donde se ubica el valor óptimo.
+
+Se aprecia claramente como pasada dicha línea, se obtienen peores resultados y cada vez hay mayor sobreajuste.
+
+## Rejilla de Parámetros
+
+A continuación, vamos a construir una rejilla de parámetros a evaluar para poder compararlos. Vamos a limitar las opciones de cada parámetro a 4 para no alargar mucho los procesos pero podemos y deberíamos ampliar este número
+
+```{r}
+hyper_grid <- expand.grid(
+  shrinkage = c(0.1, 0.05, 0.01, 0.005),
+  interaction.depth = c(3, 5, 7, 9),
+  n.minobsinnode = c(ceiling(0.01*nrow(data_clasif_train_reord)), ceiling(0.05*nrow(data_clasif_train_reord)),
+           ceiling(0.02*nrow(data_clasif_train_reord)), ceiling(0.005*nrow(data_clasif_train_reord)))
+)
+```
+
+Creada la rejilla, creamos un modelo para cada una de las 64 combinaciones
+
+```{r}
+future::plan(multisession, workers=detectCores() - 1)
+
+set.seed(12345)
+tunningGB<- future_map(1:nrow(hyper_grid),
+                         ~ {set.seed(12345);
+                           gbm(formula = Sleep_Quality~., data=data_clasif_train_reord,
+                               distribution = "multinomial",
+                               n.trees = 5000,
+                               train.fraction = 0.75,
+                               shrinkage = hyper_grid$shrinkage[.x],
+                               bag.fraction = 1,
+                               interaction.depth = hyper_grid$interaction.depth[.x],
+                               n.minobsinnode = hyper_grid$n.minobsinnode[.x]
+                         )}
+                       )
+
+plan(sequential)
+```
+
+A continuación, lo representamos gráficamente
+
+```{r}
+resultado <- map_df(1:nrow(hyper_grid),
+                    function(x) {
+                      data.frame(
+                        shrinkage = as.factor(hyper_grid$shrinkage[x]),
+                        interaction.depth = as.factor(hyper_grid$interaction.depth[x]),
+                        n.minobsinnode = as.factor(hyper_grid$n.minobsinnode[x]),
+                        ntrees = 1:5000,
+                        dev = tunningGB[[x]]$valid.error
+                      )
+
+                    }
+
+)
+
+ggplot(data=resultado, aes(x=ntrees, y=dev, col=shrinkage))+
+  geom_line(lwd=1.1)+
+  geom_hline(yintercept = min(resultado$dev))+
+  facet_grid(interaction.depth ~ n.minobsinnode)
+
+resultado %>%
+     group_by(interaction.depth, n.minobsinnode, shrinkage) %>%
+     slice_min(dev, n = 1)%>%
+     arrange(dev)
+```
+
+En la representación vemos como cada uno de los parámetros impacta en el GBM.
+
+Observamos como el mejor modelo es el que tiene una profundidad de 3, tasa de aprendizaje de 0.05, 31 observaciones mínimo por hoja y hace uso de 138. Otra opción también buena parece la de 69 árboles con profundidad y tamaño mínimo de hoja igual al anterior pero con una tasa de aprendizeje de 0.1.
+
+En este caso, vamos a optar por el primero e intentar reducir su complejidad con el número de árboles manteniendo la tasa de aprendizaje
+
+```{r}
+optComb<-which((hyper_grid$shrinkage==0.05)&(hyper_grid$interaction.depth==3)&(hyper_grid$n.minobsinnode==31))
+print(tunningGB[[optComb]])
+
+opt_gbm<-gbm.perf(tunningGB[[optComb]])
+abline(h=tunningGB[[optComb]]$valid.error[opt_gbm], lty=2, col="gray")
+```
+
+Parece que con 138 o incluso 100 para redondear vamos a obtener mñas o menos los mismos resultados y no hay ninguna otra solución que permita reducir significativamente el sobreajuste
+
+## Modelo Ganador
+
+Una vez descubierta la parametrización óptima, construimos el modelo final utilizando los datos de entrenamiento al completo para mejorar la capacidad predictiva y más adelante determinar su calidad final
+
+```{r}
+set.seed(12345)
+gbm_clasif_opt<- gbm(
+  formula = Sleep_Quality~., data=data_clasif_train,
+  distribution = "multinomial",
+  train.fraction = 1,
+  n.trees = 130,
+  shrinkage = 0.05,
+  bag.fraction = 1,
+  interaction.depth = 3,
+  n.minobsinnode = 31
+)
+
+print(gbm_clasif_opt)
+```
+
+## Evaluación del Modelo
+
+Obtenemos tanto los valores de AUC como la matriz de confusión
+
+```{r}
+pred_array <- predict(
+  gbm_clasif_opt,
+  data_clasif_train,
+  n.trees = gbm_clasif_opt$n.trees, # Asegura usar el número de árboles entrenados (130)
+  type = "response"
+)
+
+# 2. Extracción de la matriz 2D de probabilidades (Dimensiones: 619 x 4)
+# Seleccionamos la única "capa" (índice 1) de la tercera dimensión
+pred_matrix <- pred_array[,,1]
+
+# 3. Calcular el AUC Multiclase
+AUC_multiclase <- pROC::multiclass.roc(data_clasif_train$Sleep_Quality, pred_matrix)$auc
+
+# 4. Imprimir el resultado
+print(AUC_multiclase)
+
+pred_array <- predict(
+  gbm_clasif_opt,
+  data_clasif_test,
+  n.trees = gbm_clasif_opt$n.trees, # Asegura usar el número de árboles entrenados (130)
+  type = "response"
+)
+
+# 2. Extracción de la matriz 2D de probabilidades (Dimensiones: 619 x 4)
+# Seleccionamos la única "capa" (índice 1) de la tercera dimensión
+pred_matrix <- pred_array[,,1]
+
+# 3. Calcular el AUC Multiclase
+AUC_multiclase <- pROC::multiclass.roc(data_clasif_test$Sleep_Quality, pred_matrix)$auc
+
+# 4. Imprimir el resultado
+print(AUC_multiclase)
+```
+
+
+Accuracy, kappa y sensibilidades y especificidades.
+
+```{r}
+
+n_trees_optimo <- gbm_clasif_opt$n.trees 
+
+pred_array_test <- predict(
+    gbm_clasif_opt,
+    newdata = data_test,
+    n.trees = n_trees_optimo,
+    type = "response"
+)
+
+pred_matrix_test <- pred_array_test[,,1]
+
+niveles_clase <- levels(data_test$Sleep_Quality)
+if (is.null(niveles_clase)) {
+    niveles_clase <- sort(unique(data_test$Sleep_Quality)) 
+}
+
+colnames(pred_matrix_test) <- niveles_clase
+pred_clases_test <- colnames(pred_matrix_test)[apply(pred_matrix_test, 1, which.max)]
+pred_clases_test <- factor(pred_clases_test, levels = niveles_clase)
+
+cm_test <- confusionMatrix(
+    data = pred_clases_test,          # Clases predichas (Factor)
+    reference = data_test$Sleep_Quality # Clases reales (Factor)
+)
+
+cm_test$table
+
+cm_test$overall[c("Accuracy", "Kappa")]
+
+Kappa(cm_test$table)
+
+cm_test$byClass[, c("Sensitivity", "Specificity")]
+```
+
+çY para train
+
+```{r}
+
+pred_array <- predict(
+  gbm_clasif_opt,
+  data_clasif_train,
+  n.trees = gbm_clasif_opt$n.trees,
+  type = "response"
+)
+pred_matrix <- pred_array[,,1]
+niveles_clase_ref <- levels(data_clasif_train$Sleep_Quality) 
+
+if (is.null(niveles_clase_ref)) {
+    niveles_clase_ref <- sort(unique(data_clasif_train$Sleep_Quality)) 
+    data_clasif_train$Sleep_Quality <- factor(data_clasif_train$Sleep_Quality, 
+                                              levels = niveles_clase_ref)
+}
+
+colnames(pred_matrix) <- niveles_clase_ref
+pred_clases_train_raw <- colnames(pred_matrix)[apply(pred_matrix, 1, which.max)]
+pred_clases_train <- factor(pred_clases_train_raw, levels = niveles_clase_ref)
+
+cm_train <- confusionMatrix(
+    data = pred_clases_train,
+    reference = data_clasif_train$Sleep_Quality
+)
+
+cm_train$table
+cm_train$overall[c("Accuracy", "Kappa")]
+cm_train$byClass[, c("Sensitivity", "Specificity")]
+```
+
+
+
+## Importancia de las Variables
+
+Finalemnte, observamos la importancia de las variables
+
+```{r}
+summary(gbm_clasif_opt, las=2, cex.names=.5)
+```
+
+En este caso, vemos como ha cambiado mucho respecto a lo que obteníamos anteriormente, siendo el nivel de colesterol la variable más importante, sequido de la hora a la que se va a la cama y la edad.
